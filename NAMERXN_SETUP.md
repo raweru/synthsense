@@ -29,10 +29,10 @@ You need two files:
 
 ### 2.2 Install rxnutils
 
-Install rxnutils for pipeline processing:
+Install [rxnutils](https://molecularai.github.io/reaction_utils/index.html) for pipeline processing:
 
 ```bash
-pip install rxn-utils
+pip install reaction-utils
 ```
 
 ### 2.3 Create NameRxn Pipeline Configuration
