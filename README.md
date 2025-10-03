@@ -2,6 +2,8 @@
 
 **SynthSense** is a scoring component for [REINVENT4](https://github.com/MolecularAI/REINVENT4) that evaluates molecules based on their synthetic feasibility and route coherence using retrosynthetic analysis from [AiZynthFinder](https://github.com/MolecularAI/aizynthfinder).
 
+Read the preprint here LINK MISSING
+
 ## Features
 
 SynthSense provides multiple rewards to guide molecular generation:
