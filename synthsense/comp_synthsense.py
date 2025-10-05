@@ -1,28 +1,3 @@
-"""Compute easy-of-synthesis scores with AiZynthFinder.
-
-For AiZynthFinder documentation, see:
-- https://github.com/MolecularAI/aizynthfinder
-
-This implementations calls external command.
-The external command, in turn, can call AiZynthFinder command-line interface,
-or run CLI in parallel on a cluster, or even call REST API for AiZynth.
-External commands are left out of this repository.
-
-Simplest external command, with AiZynthFinder installed,
-would be the following bash script::
-
-  #!/usr/bin/env bash
-
-  cp /dev/stdin > input.smi && \
-  aizynthcli \
-     --smiles input.smi \
-     --config config.yml \
-     --output output.json.gz \
-     >>aizynth-stdout-stderr.txt 2>&1 && \
-  zcat output.json.gz
-
-"""
-
 __all__ = ["synthsense"]
 
 import logging

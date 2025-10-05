@@ -22,6 +22,7 @@ SynthSense provides multiple rewards to guide molecular generation:
 SynthSense requires the following software:
 
 1. **[REINVENT4](https://github.com/MolecularAI/REINVENT4)** - Molecular generation framework
+   - **Important**: Install a version with scoring cache disable option (required for SynthSense)
 2. **[AiZynthFinder](https://github.com/MolecularAI/aizynthfinder)** - Retrosynthetic planning tool
 3. **[NameRxn](https://www.nextmovesoftware.com/namerxn.html)** (NextMove Software) - Reaction classification tool
    - **Commercial software** - purchase required from NextMove Software
@@ -34,7 +35,9 @@ SynthSense requires the following software:
 
 ### 1. Install Prerequisites
 
-Ensure REINVENT4 and AiZynthFinder are installed and working in your environment.
+Ensure REINVENT4 (with scoring cache disable support) and AiZynthFinder are installed and working in your environment.
+
+> **Critical**: SynthSense sets `no_cache = True` to disable scoring cache, which is essential for proper functionality. Ensure your REINVENT4 installation supports this feature.
 
 ### 2. Set up NameRxn
 
