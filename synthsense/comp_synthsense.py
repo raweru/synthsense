@@ -17,7 +17,6 @@ logger = logging.getLogger("reinvent")
 @add_tag("__component")
 class synthsense:
     def __init__(self, params: Parameters):
-        self.no_cache = True  # Skip scoring cache.
         self.params = params
         self.smiles_type = "rdkit_smiles"  # For the normalizer.
         logger.info("Initializing synthsense")
@@ -25,6 +24,11 @@ class synthsense:
         self.params_run, self.endpoints = split_params(params)
         self.steps = 0
         self.number_of_endpoints = len(self.endpoints)
+
+        # Set no_cache based on whether any endpoint requires it
+        # Only endpoints with batch-dependent scoring need cache disabled
+        self.no_cache = any(endpoint.no_cache for endpoint in self.endpoints)
+        logger.info(f"synthsense cache disabled: {self.no_cache}")
 
         logger.info(f"synthsense params: {params}, run params: {self.params_run}")
 

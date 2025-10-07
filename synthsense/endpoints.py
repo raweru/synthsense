@@ -26,6 +26,10 @@ class Endpoint:
     # Value for this key is the name of the endpoint in AiZynthFinder output.
     score_to_extract: str = None
 
+    # Whether this endpoint requires scoring cache to be disabled
+    # Set to True for endpoints with batch-dependent scoring logic
+    no_cache: bool = False
+
     @abstractmethod
     def get_scores(self, smilies: list[str], out: dict) -> np.ndarray:
         raise NotImplementedError
@@ -157,6 +161,7 @@ class RouteSimilarityEndpoint(SimpleTreeScoreEndpoint):
     """
     
     score_to_extract: Literal["route_similarity"] = "route_similarity"
+    no_cache: bool = True
     
     def __post_init__(self):
         # Cache to store trees by molecule
@@ -297,6 +302,8 @@ class RoutePopularityEndpoint(SimpleTreeScoreEndpoint):
     """
     
     score_to_extract: Literal["route_popularity"] = "route_popularity"
+    no_cache: bool = True
+    
     popularity_threshold: float = 1.0  # Threshold above which routes are penalized
     penalty_multiplier: float = 1.0  # Multiplier applied to penalize overly popular routes
     
@@ -547,6 +554,8 @@ class FillaPlate(SimpleTreeScoreEndpoint):
             prevent redundant processing.
     """
     score_to_extract: Literal["fill_a_plate"] = "fill_a_plate"
+    no_cache: bool = True
+    
     bucket_threshold: int = 500
     min_steps_for_penalization: int = 1
     penalization_enabled: bool = True
