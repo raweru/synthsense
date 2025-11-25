@@ -1,4 +1,3 @@
-
 import json
 import os
 import tempfile
@@ -10,7 +9,8 @@ import yaml
 from reinvent_plugins.components.synthsense.parameters import ComponentLevelParameters
 
 
-HITINVENT_PROFILES = "HITINVENT_PROFILES"
+__ENV_NAME = "CAZP_PROFILES"
+CAZP_PROFILE = __ENV_NAME if __ENV_NAME in os.environ else "HITINVENT_PROFILES"
 
 
 def mergedicts(a: dict, b: dict, path=None) -> dict:
@@ -37,7 +37,7 @@ def mergedicts(a: dict, b: dict, path=None) -> dict:
 def prepare_config(params: ComponentLevelParameters) -> Tuple[dict, str]:
     """Prepare AiZynthFinder config and command.
 
-    This function constructs AiZynthFinder config, in the following order:I
+    This function constructs AiZynthFinder config, in the following order:
     - Lowest priority is base config in the profiles.
     - Next priority are values in profiles, they overwrite base config.
     - Highest priority are inline values in Reinvent scoring component.
@@ -46,29 +46,29 @@ def prepare_config(params: ComponentLevelParameters) -> Tuple[dict, str]:
     :return: dict with AiZynthFinder-ready config
     """
 
-    if HITINVENT_PROFILES in os.environ:
-        uiprofiles_file = os.environ[HITINVENT_PROFILES]
+    if CAZP_PROFILE in os.environ:
+        uiprofiles_file = os.environ[CAZP_PROFILE]
         with open(uiprofiles_file) as fp:
             uiprofiles = json.load(fp)
     else:
         raise ValueError(
-            f"Missing synthsense Profiles file specified by environmental variable {HITINVENT_PROFILES}."
+            f"Missing CAZP Profiles file specified by environmental variable {CAZP_PROFILE}."
         )
 
     if "base_aizynthfinder_config" in uiprofiles:
         base_aizynthfinder_config = uiprofiles.get("base_aizynthfinder_config")
     else:
         raise ValueError(
-            f"Missing base_aizynthfinder_config in synthsense profiles file"
-            f" specified by environmental variable {HITINVENT_PROFILES}."
+            f"Missing base_aizynthfinder_config in CAZP profiles file"
+            f" specified by environmental variable {CAZP_PROFILE}."
         )
 
     if "custom_aizynth_command" in uiprofiles:
         cmd = uiprofiles.get("custom_aizynth_command")
     else:
         raise ValueError(
-            f"Missing custom_aizynth_command in synthsense profiles file"
-            f" specified by environmental variable {HITINVENT_PROFILES}."
+            f"Missing custom_aizynth_command in CAZP profiles file"
+            f" specified by environmental variable {CAZP_PROFILE}."
         )
 
     with open(base_aizynthfinder_config) as fp:

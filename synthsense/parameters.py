@@ -2,8 +2,7 @@ import dataclasses
 from dataclasses import asdict, dataclass
 from typing import Any, Optional, Tuple
 
-from reinvent_plugins.components.synthsense.endpoints import (AnyEndpoint,
-                                                        endpoint_from_dict)
+from reinvent_plugins.components.synthsense.endpoints import AnyEndpoint, endpoint_from_dict
 
 from ..add_tag import add_tag
 
@@ -20,18 +19,20 @@ class Parameters:
     reactions_profile: list[Optional[str]] = None
     score_to_extract: list[str] = None  # Endpoint selection.
     reference_route_file: list[str] = None
+
     # Route popularity endpoint parameters
     popularity_threshold: list[Optional[int]] = None
     penalty_multiplier: list[Optional[float]] = None
     consider_subroutes: list[Optional[bool]] = None
     min_subroute_length: list[Optional[int]] = None
     penalize_subroutes: list[Optional[str]] = None
+
     # Fill-a-Plate params
     bucket_threshold: list[Optional[int]] = None
     min_steps_for_penalization: list[Optional[int]] = None
     penalization_enabled: list[Optional[bool]] = None
-    
-    
+
+
 @dataclass
 class ComponentLevelParameters:
     number_of_steps: Optional[int] = None
@@ -49,8 +50,8 @@ def get_num_endpoints(params: Parameters) -> int:
     """
     fields = dataclasses.fields(params)
     values = [getattr(params, f.name) for f in fields]
-    lengthes = [len(v) if isinstance(v, list) else 0 for v in values]
-    num_endpoints = max(lengthes) if lengthes else 0
+    lengths = [len(v) if isinstance(v, list) else 0 for v in values]
+    num_endpoints = max(lengths) if lengths else 0
     return num_endpoints
 
 

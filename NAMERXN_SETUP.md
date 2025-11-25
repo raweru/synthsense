@@ -69,36 +69,29 @@ Use this Python script to transfer classifications to the unique templates file:
 import pandas as pd
 from collections import Counter
 
-# Load the NameRxn-annotated template library
 template_lib = pd.read_csv(
     "uspto_template_library-nm.csv", 
     sep="\t", 
     usecols=["template_hash", "NMC"]
 )
 
-# Load the unique templates file
 unique_templates = pd.read_csv(
     "uspto_unique_templates.csv.gz", 
     index_col=0, 
     sep="\t"
 )
 
-# Map template hash to most common classification
-# NMC column may contain multiple classes separated by ";"
-# We take the most common one
 hash_to_class = template_lib.groupby("template_hash")["NMC"].apply(
     lambda x: Counter([
         cls for val in x for cls in val.split(";")
     ]).most_common(1)[0][0]
 ).to_dict()
 
-# Add classification column to unique templates
 new_classification = unique_templates.template_hash.apply(
     lambda x: hash_to_class[x]
 )
 unique_templates["classification"] = new_classification
 
-# Save the annotated unique templates
 unique_templates.to_csv(
     "uspto_unique_templates_with_classes.csv.gz", 
     sep="\t"

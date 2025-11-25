@@ -75,9 +75,7 @@ def reaction_classes_with_depth(node: dict, depth=1) -> list:
             [reaction_classes_with_depth(c, depth + 1) for c in node["children"]], []
         )
     elif node["type"] == "mol" and "children" in node:
-        return sum(
-            [reaction_classes_with_depth(c, depth) for c in node["children"]], []
-        )
+        return sum([reaction_classes_with_depth(c, depth) for c in node["children"]], [])
     else:
         return []
 

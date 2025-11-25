@@ -1,17 +1,20 @@
 import json
 import logging
 from abc import abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import field
 from functools import cached_property
 from typing import Literal, Optional, Union
-from typing_extensions import override
+from typing_extensions import Annotated, override
 
 import numpy as np
 import pydantic
+from pydantic import ConfigDict, Field
+from pydantic.dataclasses import dataclass
 
 from reinvent_plugins.components.synthsense.tree_edit_distance import TED, route_signature
 
 logger = logging.getLogger("reinvent")
+
 
 @dataclass
 class Endpoint:
@@ -64,11 +67,9 @@ class SimpleTreeScoreEndpoint(Endpoint):
         return np.nanmax(scores)
 
     def keep(self, tree: dict) -> bool:
-        """Only keep solved trees by default.
-        """
+        """Only keep solved trees by default."""
         return tree.get("metadata", {}).get("is_solved", False)
 
-    @override
     def default_score(self) -> float:
         """Default score if there are no trees for a molecule."""
         return 0.0
@@ -98,10 +99,9 @@ class SimpleTreeScoreEndpoint(Endpoint):
 
         return np.array(ordered_scores)
 
-
 @dataclass
-class SFScore(SimpleTreeScoreEndpoint):
-    """Endpoint for Reinvent synthsense score.
+class CazpEndpoint(SimpleTreeScoreEndpoint):
+    """Endpoint for Reinvent CAZP score. (sfscore v1)
 
     This score is a product of three AiZynthFinder scores:
     - stock availability
@@ -111,9 +111,9 @@ class SFScore(SimpleTreeScoreEndpoint):
     In the future, this score could be moved to AiZynthFinder.
     """
 
-    score_to_extract: Literal["sfscore"] = "sfscore"
+    score_to_extract: Literal["cazp"] = "cazp"
     reaction_step_coefficient: float = 0.90
-    
+
     def tree_score(self, tree: dict) -> float:
 
         scores = tree["scores"]
@@ -132,71 +132,160 @@ class SFScore(SimpleTreeScoreEndpoint):
         score = bb_score * reacticlass_score * numsteps_score
         return score
 
+    @override
+    def keep(self, tree: dict) -> bool:
+        """Filter to choose which trees to keep per endpoint and molecule.
 
+        For some endpoints, like number of reactions,
+        the value for trees that were not solved might be misleading.
+        """
+        return True
+
+    @override
+    def default_score(self) -> float:
+        """Default score if there are no trees for a molecule."""
+        return np.nan
+
+@dataclass
+class RouteDistanceEndpoint(SimpleTreeScoreEndpoint):
+    """Endpoint for Route Distance score (rrscore v1).
+
+    In the future, this score could be moved to AiZynthFinder,
+    with a caveat that users could request multiple reference routes.
+    """
+
+    score_to_extract: Literal["route_distance"] = "route_distance"
+    reference_route_file: Optional[str] = None
+
+    @cached_property
+    def reference_route(self) -> dict:
+        if self.reference_route_file is None:
+            raise ValueError("Missing reference_route_file in RouteDistanceEndpoint.")
+
+        with open(self.reference_route_file) as f:
+            reference_route = json.load(f)
+
+        return reference_route
+
+    @override
+    def best_score(self, scores: list[float]) -> float:
+        return np.nanmin(scores)
+    
+    @override
+    def default_score(self) -> float:
+        """Default score if there are no trees for a molecule."""
+        return np.nan
+
+    @override
+    def tree_score(self, tree: dict) -> float:
+        return TED(tree, self.reference_route)
+
+@dataclass
+class SFScore(SimpleTreeScoreEndpoint):
+    """Endpoint for Reinvent synthsense score.
+
+    This score is a product of three AiZynthFinder scores:
+    - stock availability
+    - reaction class membership
+    - number of reactions
+
+    In the future, this score could be moved to AiZynthFinder.
+    """
+
+    score_to_extract: Literal["sfscore"] = "sfscore"
+    reaction_step_coefficient: float = 0.90
+
+    def tree_score(self, tree: dict) -> float:
+
+        scores = tree["scores"]
+        bb_score = scores["stock availability"]
+        reacticlass_score = scores["reaction class membership"]
+        numsteps = scores["number of reactions"]
+
+        # Score by number of steps.
+        # Hard cut-off in aizynth on num_steps (depth of search tree).
+        # We can add "soft" signal to reward fewer steps.
+        # Resulting score is "ease of synthesis", not binary synthesizeability.
+        # We could even increase num_steps for aizynth config,
+        # and add two penalties: smaller below threshold, higher above.
+        numsteps_score = self.reaction_step_coefficient**numsteps
+
+        score = bb_score * reacticlass_score * numsteps_score
+        return score
+    
+    @override
+    def keep(self, tree: dict) -> bool:
+        """Filter to choose which trees to keep per endpoint and molecule.
+
+        For some endpoints, like number of reactions,
+        the value for trees that were not solved might be misleading.
+        """
+        return True
+    
 @dataclass
 class RouteSimilarityEndpoint(SimpleTreeScoreEndpoint):
     """
     This endpoint measures how similar the synthesis routes are between molecules.
     It uses Tree Edit Distance (TED) to quantify the structural differences between synthesis trees.
-    
+
     The scoring process works as follows:
-    
+
     1. For each molecule's tree:
        - Calculate the minimum TED distance to each other molecule's trees
        - Take the average of these minimum distances for that tree
-    
+
     2. For each molecule:
        - Take the minimum of the averages across all its trees
        - This selects the "best" tree that has the lowest average TED with other molecules
-    
+
     The similarity score is calculated using: 1 / (1 + TED)
     This formula produces values in range (0, 1] where:
     - Values close to 1 mean trees are very similar (low TED)
     - Values close to 0 mean trees are very different (high TED)
-    
+
     This calculation is batch-independent, allowing scores to be compared across different batches.
-    
-    Comparisons involving trees with unrecognized reactions ("0.0" in signature) are 
+
+    Comparisons involving trees with unrecognized reactions ("0.0" in signature) are
     assigned a penalty.
     """
-    
+
     score_to_extract: Literal["route_similarity"] = "route_similarity"
     no_cache: bool = True
-    
+
     def __post_init__(self):
         # Cache to store trees by molecule
         self._all_moltrees = {}
         self._current_out = None
-    
+
     @override
     def get_scores(self, smilies: list[str], out: dict) -> np.ndarray:
         """Extract and prepare molecule trees for scoring."""
         # Cache all molecule trees for this batch
         self._all_moltrees = {mol["target"]: mol["trees"] for mol in out["data"]}
         self._current_out = out
-        
+
         return super().get_scores(smilies, out)
-    
+
     @override
     def best_score(self, scores: list[float]) -> float:
         """Return the maximum tree similarity score for this molecule."""
         return np.nanmax(scores)
-    
+
     @override
     def tree_score(self, tree: dict) -> float:
         """Calculate a similarity score for a single synthesis tree compared to all other molecules' trees in the batch.
-        
+
         This method evaluates how similar a given synthesis tree is to all other molecules' trees in the batch.
         For each other molecule, it finds the minimum Tree Edit Distance (TED) between the current tree
         and any of other molecule's trees. It then averages these minimum distances across all molecules.
-        
+
         The similarity is calculated as: 1/(1+TED)
-        
+
         The final scores range from 0 to 1:
         - Values close to 1 mean the tree is very similar to other trees (low TED)
         - Values close to 0 mean the tree is very different from other trees (high TED)
-        
-        Comparisons involving trees with unrecognized reactions ("0.0" in signature) are 
+
+        Comparisons involving trees with unrecognized reactions ("0.0" in signature) are
         assigned a penalty.
         """
         # Get molecule SMILES for this tree
@@ -205,38 +294,38 @@ class RouteSimilarityEndpoint(SimpleTreeScoreEndpoint):
             if tree in trees:
                 current_smiles = smi
                 break
-        
+
         if current_smiles is None:
             logger.warning("Could not find current tree in molecule trees")
             return np.nan
-        
+
         # Check if current tree has "0.0" in its signature
         current_signature = route_signature(tree)
         current_has_unrecognized = "0.0" in current_signature
         # logger.debug(f"Processing tree for {current_smiles} with signature {current_signature}")
         # logger.debug(f"Current tree has unrecognized reactions: {current_has_unrecognized}")
-        
+
         # For each other molecule, calculate the minimum TED to this tree
         min_teds = []
         valid_comparisons = 0
-        
+
         for smi, trees in self._all_moltrees.items():
             if smi == current_smiles:
                 continue  # Skip comparison with self/same molecule
-            
+
             # Filter for solved trees only
             solved_trees = [t for t in trees if self.keep(t)]
-            
+
             if not solved_trees:
                 continue  # Skip if no solved trees for this molecule
-            
+
             ted_values = []
-            
+
             for other_tree in solved_trees:
                 # Check if the other tree has "0.0" in its signature
                 other_signature = route_signature(other_tree)
                 other_has_unrecognized = "0.0" in other_signature
-                
+
                 # Handle trees with unrecognized reactions
                 if current_has_unrecognized or other_has_unrecognized:
                     ted = TED(tree, other_tree)
@@ -246,83 +335,91 @@ class RouteSimilarityEndpoint(SimpleTreeScoreEndpoint):
                 else:
                     ted = TED(tree, other_tree)
                     ted_values.append(ted)
-            
+
             min_ted = min(ted_values)
             min_teds.append(min_ted)
             valid_comparisons += 1
-        
+
         # If no other molecules with solved trees, return 0
         if not min_teds:
-            logger.warning(f"No other molecules with solved trees found for {current_smiles}, returning 0.0")
+            logger.warning(
+                f"No other molecules with solved trees found for {current_smiles}, returning 0.0"
+            )
             return 0.0
-        
+
         # Calculate average of all TED values
         avg_min_ted = sum(min_teds) / len(min_teds)
-        
+
         # Apply an additional small penalty if this tree has unrecognized reactions
         # This ensures trees with unrecognized reactions are slightly demotivated
         if current_has_unrecognized:
             unrecognized_penalty = 1.5  # 50% additional penalty
             avg_min_ted = avg_min_ted * unrecognized_penalty
-        
+
         # Calculate similarity using 1/(1+TED) formula
         similarity_score = 1.0 / (1.0 + avg_min_ted)
-        
+
         return similarity_score
 
 
 @dataclass
 class RoutePopularityEndpoint(SimpleTreeScoreEndpoint):
     """Endpoint for Route Popularity score.
-    
+
     This endpoint calculates how popular/common each molecule's synthesis routes are WITHIN the batch.
     It measures the fraction of molecules in the batch that share a specific route signature.
     The scoring process works as follows:
-    
+
     1. For each unique valid route signature found across all solved trees in the batch:
        - Count how many distinct molecules possess a tree with this signature.
        - Normalize this count by the total number of molecules in the batch.
          This yields the "molecule popularity" for that route signature (range [0, 1]).
-    
+
     2. For each molecule:
        - Get the (potentially penalized) molecule popularity score for each of its solved trees' signatures.
        - The final score for the molecule is the *maximum* of these scores.
-        
+
     3. Popularity penalty mechanism:
-       - After scoring a batch, if any route signature's molecule popularity exceeded the 
+       - After scoring a batch, if any route signature's molecule popularity exceeded the
          specified threshold during that batch, that route signature is permanently added to the penalized set.
        - Signatures in the penalized set will have their molecule popularity scores multiplied by the
          penalty_multiplier when scoring *subsequent* batches (see `tree_score`).
        - This ensures permanent exploration away from overused routes by applying the penalty
          from the step *after* high popularity is detected.
-    
+
     This endpoint returns values in range [0,1] where:
     - 1 means the molecule's most popular route is shared by all molecules in the batch (before penalty).
     - 0 means the molecule's routes are unique or invalid/unrecognized.
     """
-    
+
     score_to_extract: Literal["route_popularity"] = "route_popularity"
     no_cache: bool = True
-    
+
     popularity_threshold: float = 1.0  # Threshold above which routes are penalized
     penalty_multiplier: float = 1.0  # Multiplier applied to penalize overly popular routes
-    
+
     def __post_init__(self):
         # Cache to store trees and route frequencies
         self._all_moltrees = {}
-        self._route_signatures = {}   # Maps molecule SMILES to its list of parsed route signatures
-        self._molecule_frequencies = {} # Maps route signature to the count of molecules having it
-        self._normalized_molecule_frequencies = {} # Maps route signature to its normalized molecule frequency
+        self._route_signatures = {}  # Maps molecule SMILES to its list of parsed route signatures
+        self._molecule_frequencies = {}  # Maps route signature to the count of molecules having it
+        self._normalized_molecule_frequencies = (
+            {}
+        )  # Maps route signature to its normalized molecule frequency
         self._batch_size = 0
         self._penalized_routes = set()  # Permanently track routes that exceed threshold
-        
+
         # Special markers
-        self.INVALID_ROUTE_MARKER = frozenset(["INVALID_ROUTE_0.0"]) # Marker for routes containing "0.0"
-        logger.info(f"Initialized RoutePopularityEndpoint with threshold={self.popularity_threshold}, penalty_multiplier={self.penalty_multiplier}")
-    
+        self.INVALID_ROUTE_MARKER = frozenset(
+            ["INVALID_ROUTE_0.0"]
+        )  # Marker for routes containing "0.0"
+        logger.info(
+            f"Initialized RoutePopularityEndpoint with threshold={self.popularity_threshold}, penalty_multiplier={self.penalty_multiplier}"
+        )
+
     def _parse_signature(self, signature: str) -> frozenset:
         """Parse route signature string into a set of reaction classes to ignore order.
-        
+
         Returns a frozenset of reaction classes, or a special marker frozenset for invalid signatures.
         """
         if "0.0" in signature:
@@ -332,28 +429,28 @@ class RoutePopularityEndpoint(SimpleTreeScoreEndpoint):
         # Clean and split the signature into reaction classes
         reaction_classes = signature.split(",")
         return frozenset(reaction_classes)
-    
+
     def _calculate_batch_frequencies(self):
         """Calculate raw and normalized route signature frequencies for the current batch."""
         # Extract and parse all route signatures per molecule
         self._route_signatures = {}
-        all_unique_parsed_signatures = set() # Store all unique valid signatures in the batch
-        
+        all_unique_parsed_signatures = set()  # Store all unique valid signatures in the batch
+
         for smi, trees in self._all_moltrees.items():
             solved_trees = [t for t in trees if self.keep(t)]
-            
+
             molecule_signatures = []
             for tree in solved_trees:
                 raw_signature = route_signature(tree)
                 parsed_signature = self._parse_signature(raw_signature)
-                
+
                 # Only consider valid signatures (exclude marker frozensets)
                 if parsed_signature not in (self.INVALID_ROUTE_MARKER):
                     molecule_signatures.append(parsed_signature)
                     all_unique_parsed_signatures.add(parsed_signature)
-                
+
             self._route_signatures[smi] = molecule_signatures
-        
+
         # Calculate frequency based on unique molecules having the signature
         self._molecule_frequencies = {}
         for signature in all_unique_parsed_signatures:
@@ -370,40 +467,46 @@ class RoutePopularityEndpoint(SimpleTreeScoreEndpoint):
                 normalized_mol_freq = count / self._batch_size
                 self._normalized_molecule_frequencies[signature] = normalized_mol_freq
         else:
-             # Handle empty batch case
-             for signature in all_unique_parsed_signatures:
-                 self._normalized_molecule_frequencies[signature] = 0.0
-    
+            # Handle empty batch case
+            for signature in all_unique_parsed_signatures:
+                self._normalized_molecule_frequencies[signature] = 0.0
+
     def _update_penalized_routes(self):
         """Update the set of penalized routes based on current batch frequencies."""
         newly_penalized = set()
         if self._batch_size > 0:
             for signature, normalized_mol_freq in self._normalized_molecule_frequencies.items():
-                 # Check if route popularity exceeds threshold for potential penalization next batch
-                 # Only add if it's not already penalized to avoid repeated logging.
-                 # Exclude marker sets from penalization checks
-                if signature not in (self.INVALID_ROUTE_MARKER) and \
-                   normalized_mol_freq >= self.popularity_threshold and \
-                   signature not in self._penalized_routes:
+                # Check if route popularity exceeds threshold for potential penalization next batch
+                # Only add if it's not already penalized to avoid repeated logging.
+                # Exclude marker sets from penalization checks
+                if (
+                    signature not in (self.INVALID_ROUTE_MARKER)
+                    and normalized_mol_freq >= self.popularity_threshold
+                    and signature not in self._penalized_routes
+                ):
                     newly_penalized.add(signature)
-                    
+
                     # Add debug logging to see exactly what's being added to the penalized set
-                    logger.info(f"Route identified for penalization next batch: {signature} with molecule popularity {normalized_mol_freq:.4f} >= threshold {self.popularity_threshold}")
+                    logger.info(
+                        f"Route identified for penalization next batch: {signature} with molecule popularity {normalized_mol_freq:.4f} >= threshold {self.popularity_threshold}"
+                    )
 
         # Update the main penalized set for the next batch
         if newly_penalized:
             self._penalized_routes.update(newly_penalized)
-            logger.info(f"{len(newly_penalized)} routes added to penalized set for next batch. Total penalized: {len(self._penalized_routes)}.")
-    
+            logger.info(
+                f"{len(newly_penalized)} routes added to penalized set for next batch. Total penalized: {len(self._penalized_routes)}."
+            )
+
     @override
     def get_scores(self, smilies: list[str], out: dict) -> np.ndarray:
-        """Calculate route popularity scores, applying penalties from previous batches 
+        """Calculate route popularity scores, applying penalties from previous batches
         and updating the penalized set for the next batch."""
         # 1. Cache trees and update batch size for this run
         self._all_moltrees = {mol["target"]: mol["trees"] for mol in out["data"]}
         self._batch_size = len(smilies)
         # logger.debug(f"RoutePopularityEndpoint: Submitted {self._batch_size} SMILES, received results for {len(self._all_moltrees)} molecules from AiZynthFinder.")
-        
+
         # 2. Calculate raw and normalized frequencies for the current batch
         self._calculate_batch_frequencies()
 
@@ -411,27 +514,27 @@ class RoutePopularityEndpoint(SimpleTreeScoreEndpoint):
         #    tree_score uses the _normalized_molecule_frequencies calculated above,
         #    and applies penalties based on _penalized_routes from previous batches.
         scores = super().get_scores(smilies, out)
-        
+
         # 4. Update the penalized routes set for the *next* batch based on current frequencies.
         self._update_penalized_routes()
 
         return scores
-    
+
     @override
     def tree_score(self, tree: dict) -> float:
         """Calculate popularity score for this tree based on molecule frequency.
-        
+
         The score is the frequency of this tree's route signature among molecules
         normalized by the total number of molecules in the batch.
-        
+
         If the signature is invalid ("0.0"), return 0 as the worst score.
-        
-        If the route has ever exceeded the popularity_threshold (based on molecule frequency), 
+
+        If the route has ever exceeded the popularity_threshold (based on molecule frequency),
         it will always be penalized, even if its current popularity is below the threshold.
         """
         raw_signature = route_signature(tree)
         parsed_signature = self._parse_signature(raw_signature)
-        
+
         # Return 0 if the signature is invalid
         if parsed_signature in (self.INVALID_ROUTE_MARKER):
             # logger.debug(f"Tree has invalid signature '{raw_signature}', assigning score 0.0")
@@ -439,12 +542,12 @@ class RoutePopularityEndpoint(SimpleTreeScoreEndpoint):
 
         # Get the pre-calculated normalized molecule frequency
         normalized_mol_freq = self._normalized_molecule_frequencies.get(parsed_signature, 0.0)
-        
+
         # Apply penalty if this route is in the penalized set
         if parsed_signature in self._penalized_routes:
             normalized_mol_freq *= self.penalty_multiplier
             # logger.debug(f"Applied penalty to signature {parsed_signature}, score: {normalized_mol_freq}")
-            
+
         return normalized_mol_freq
 
 
@@ -462,16 +565,16 @@ class RRScore(SimpleTreeScoreEndpoint):
     @cached_property
     def reference_route(self) -> dict:
         if self.reference_route_file is None:
-            raise ValueError("Missing reference_route_file in RouteDistanceEndpoint.")
+            raise ValueError("Missing reference_route_file in RRScore.")
 
         with open(self.reference_route_file) as f:
             reference_route = json.load(f)
 
         return reference_route
-    
+
     @override
     def default_score(self) -> float:
-        """Default score if there are no trees for a molecule."""
+        """Default score if there are no trees for a molecule (super high ted)."""
         return 1000.0
 
     @override
@@ -515,7 +618,7 @@ class FillaPlate(SimpleTreeScoreEndpoint):
     If `penalization_enabled` is True, hitting the `bucket_threshold`
     triggers permanent penalization for the specific route (if eligible based
     on `min_steps_for_penalization`) and all molecules associated with it.
-    
+
     Scoring Process:
       1. `get_scores` incrementally updates cumulative molecule counts per route
          signature, skipping molecules that are already in `_penalized_molecules`.
@@ -553,9 +656,10 @@ class FillaPlate(SimpleTreeScoreEndpoint):
             whose thresholds were met during the current `get_scores` call to
             prevent redundant processing.
     """
+
     score_to_extract: Literal["fill_a_plate"] = "fill_a_plate"
     no_cache: bool = True
-    
+
     bucket_threshold: int = 500
     min_steps_for_penalization: int = 1
     penalization_enabled: bool = True
@@ -566,19 +670,15 @@ class FillaPlate(SimpleTreeScoreEndpoint):
     _batch_size: int = field(default=0, init=False)
 
     # Cumulative state for penalization
-    _cumulative_molecule_counts_per_route: dict[frozenset, set[str]] = field(
-        default_factory=dict
-    )
+    _cumulative_molecule_counts_per_route: dict[frozenset, set[str]] = field(default_factory=dict)
     _penalized_routes: set[frozenset] = field(default_factory=set)
     _penalized_molecules: set[str] = field(default_factory=set)
 
-    _processed_threshold_routes_this_call: set[frozenset] = field(
-        default_factory=set
-    )
+    _processed_threshold_routes_this_call: set[frozenset] = field(default_factory=set)
 
     # Special markers for non-standard routes
     INVALID_ROUTE_MARKER: frozenset = frozenset(["INVALID_ROUTE_0.0"])
-    #IN_STOCK_ROUTE_MARKER: frozenset = frozenset(["IN_STOCK_ROUTE"]) # when route is 0 steps
+    # IN_STOCK_ROUTE_MARKER: frozenset = frozenset(["IN_STOCK_ROUTE"]) # when route is 0 steps
 
     def __post_init__(self):
         """Logs initialization parameters."""
@@ -590,11 +690,6 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         )
         if self.bucket_threshold <= 0:
             raise ValueError("bucket_threshold must be greater than 0.")
-
-    @override
-    def default_score(self) -> float:
-        """Returns the default score (0.0) for molecules without valid trees."""
-        return 0.0
 
     def _parse_signature(self, signature: str) -> frozenset:
         """Parses a route signature string into a frozenset of reaction classes.
@@ -609,7 +704,7 @@ class FillaPlate(SimpleTreeScoreEndpoint):
             A frozenset representing the reaction classes, or a special marker
             frozenset (INVALID_ROUTE_MARKER or IN_STOCK_ROUTE_MARKER).
         """
-        #if not signature:
+        # if not signature:
         #    return self.IN_STOCK_ROUTE_MARKER
         if "0.0" in signature:
             return self.INVALID_ROUTE_MARKER
@@ -627,13 +722,14 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         # Extract and parse unique valid signatures per molecule
         for smi, trees in self._all_moltrees.items():
             solved_trees = [t for t in trees if self.keep(t)]
-            molecule_signatures = set() # Use set for uniqueness per molecule
+            molecule_signatures = set()  # Use set for uniqueness per molecule
             for tree in solved_trees:
                 parsed_signature = self._parse_signature(route_signature(tree))
                 # Exclude markers
-                if parsed_signature not in (self.INVALID_ROUTE_MARKER,
-                #                            self.IN_STOCK_ROUTE_MARKER
-                                            ):
+                if parsed_signature not in (
+                    self.INVALID_ROUTE_MARKER,
+                    #                            self.IN_STOCK_ROUTE_MARKER
+                ):
                     molecule_signatures.add(parsed_signature)
             self._route_signatures[smi] = list(molecule_signatures)
 
@@ -650,16 +746,17 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         Args:
             signature: The route signature whose count was just updated.
         """
-        if signature in (self.INVALID_ROUTE_MARKER, 
-        #                 self.IN_STOCK_ROUTE_MARKER
-                         ):
+        if signature in (
+            self.INVALID_ROUTE_MARKER,
+            #                 self.IN_STOCK_ROUTE_MARKER
+        ):
             return  # Ignore special markers
 
         is_processed = signature in self._processed_threshold_routes_this_call
         is_penalized = self.penalization_enabled and signature in self._penalized_routes
 
         if is_processed or is_penalized:
-            return # Already handled or route penalized (when penalization is on)
+            return  # Already handled or route penalized (when penalization is on)
 
         # Get molecules associated *only* with this specific signature
         associated_mols = self._cumulative_molecule_counts_per_route.get(signature, set())
@@ -668,8 +765,7 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         if individual_count == self.bucket_threshold:
             log_prefix = f"Route Threshold [{signature}]"
             logger.info(
-                f"{log_prefix}: Reached! "
-                f"Count: {individual_count}/{self.bucket_threshold}"
+                f"{log_prefix}: Reached! " f"Count: {individual_count}/{self.bucket_threshold}"
             )
             # Log details regardless of penalization status
             self._log_bucket_filled_details(signature, associated_mols)
@@ -683,8 +779,7 @@ class FillaPlate(SimpleTreeScoreEndpoint):
                 # Check if not already penalized (covered by is_penalized check above)
                 if is_eligible:
                     logger.info(
-                        f"{log_prefix}: Penalizing route {signature} "
-                        f"(length {len(signature)})"
+                        f"{log_prefix}: Penalizing route {signature} " f"(length {len(signature)})"
                     )
                     self._penalized_routes.add(signature)
                     route_penalized_now = True
@@ -715,7 +810,6 @@ class FillaPlate(SimpleTreeScoreEndpoint):
             else:
                 logger.info(f"{log_prefix}: Penalization disabled, skipping penalty application.")
 
-
     @override
     def get_scores(self, smilies: list[str], out: dict) -> np.ndarray:
         """Calculates fill_a_plate scores for a batch of SMILES.
@@ -744,15 +838,15 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         for smi in smilies:
             # Skip if molecule already penalized
             if self.penalization_enabled and smi in self._penalized_molecules:
-                 continue
+                continue
 
             signatures = self._route_signatures.get(smi, [])
             for signature in signatures:
                 # Skip markers and already penalized routes
-                if signature in (self.INVALID_ROUTE_MARKER, 
-                #                self.IN_STOCK_ROUTE_MARKER
-                                ) or \
-                   (self.penalization_enabled and signature in self._penalized_routes):
+                if signature in (
+                    self.INVALID_ROUTE_MARKER,
+                    #                self.IN_STOCK_ROUTE_MARKER
+                ) or (self.penalization_enabled and signature in self._penalized_routes):
                     continue
 
                 if signature not in self._cumulative_molecule_counts_per_route:
@@ -776,7 +870,7 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         if self.penalization_enabled:
             for i, current_smi in enumerate(smilies):
                 if current_smi in self._penalized_molecules:
-                    if final_scores[i] != 0.0: # Log only if score was changed
+                    if final_scores[i] != 0.0:  # Log only if score was changed
                         penalized_in_batch += 1
                     final_scores[i] = 0.0
 
@@ -786,8 +880,7 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         return final_scores
 
     def _log_bucket_filled_details(
-        self, trigger_signature: frozenset,
-        molecules_in_scope: set[str]
+        self, trigger_signature: frozenset, molecules_in_scope: set[str]
     ):
         """Logs detailed information when a penalization threshold is met.
 
@@ -818,8 +911,12 @@ class FillaPlate(SimpleTreeScoreEndpoint):
 
     @override
     def keep(self, tree: dict) -> bool:
-        """Returns True if the tree represents a solved synthesis route."""
-        return tree.get("metadata", {}).get("is_solved", False)
+        """Filter to choose which trees to keep per endpoint and molecule.
+
+        For some endpoints, like number of reactions,
+        the value for trees that were not solved might be misleading.
+        """
+        return True
 
     @override
     def tree_score(self, tree: dict) -> float:
@@ -840,9 +937,10 @@ class FillaPlate(SimpleTreeScoreEndpoint):
         parsed_signature = self._parse_signature(route_signature(tree))
 
         # 1. Check for invalid/in stock routes
-        if parsed_signature in (self.INVALID_ROUTE_MARKER,
-        #                        self.IN_STOCK_ROUTE_MARKER
-                                ):
+        if parsed_signature in (
+            self.INVALID_ROUTE_MARKER,
+            #                        self.IN_STOCK_ROUTE_MARKER
+        ):
             return 0.0
 
         # 2. Check if the specific route is penalized
@@ -862,12 +960,14 @@ class FillaPlate(SimpleTreeScoreEndpoint):
 
 
 AnyEndpoint = Union[
+    CazpEndpoint,
+    RouteDistanceEndpoint,
     SFScore,
     RRScore,
     NumberOfReactionsEndpoint,
     RouteSimilarityEndpoint,
     RoutePopularityEndpoint,
-    FillaPlate
+    FillaPlate,
 ]
 
 
@@ -884,7 +984,8 @@ def endpoint_from_dict(data: dict) -> AnyEndpoint:
     # Parsing in Pydantic uses model_validate method of a BaseModel subclass.
     # Let's create such a subclass.
     class Wrapper(pydantic.BaseModel):
-        obj: AnyEndpoint
+        model_config = ConfigDict(extra='forbid')
+        obj: Annotated[AnyEndpoint, Field(discriminator='score_to_extract')]
 
     # Now we can call model_validate to parse the Union.
     wrapped_endpoint = Wrapper.model_validate({"obj": data})

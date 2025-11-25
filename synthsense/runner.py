@@ -45,10 +45,10 @@ def run_aizynth(smilies: list[str], params: ComponentLevelParameters, epoch: int
     # By default tempdir can be read only by the creating user.
     # GUI runs Reinvent by a "service user". To inspect content by other users,
     # add permissions for group (GRP), and keep all for user (USR).
-    # permissions = (
-    #     stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-    # )
-    # os.chmod(tmpdir, permissions)
+    permissions = (
+        stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+    )
+    os.chmod(tmpdir, permissions)
 
     ensure_custom_stock_is_inchikey(config, tmpdir)
 
