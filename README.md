@@ -35,7 +35,7 @@ SynthSense requires the following software:
 
 ### 1. Install Prerequisites
 
-Ensure REINVENT4 (with scoring cache disable support) and AiZynthFinder are installed and working in your environment.
+Ensure REINVENT4 (4.7 or newer) and AiZynthFinder are installed and working in your environment.
 
 > **Critical**: SynthSense sets `no_cache = True` to disable scoring cache, which is essential for proper functionality. Ensure your REINVENT4 installation supports this feature.
 
@@ -45,11 +45,12 @@ Follow the instructions in `NAMERXN_SETUP.md` to configure NameRxn for annotatin
 
 ### 3. Install SynthSense
 
-Copy `synthsense` directory into your REINVENT4 plugins directory:
+**Synthsense (initial release) already comes with REINVENT 4.7 and newer.
+If for some reason it is not present, just copy synthsense folder into reinvent_plugins/components.**
 
 ```bash
 # Assuming REINVENT4 is installed
-cp -r synthsense /path/to/REINVENT4/reinvent_plugins/components/
+cp -r synthsense /path/to/REINVENT4/reinvent_plugins/components
 ```
 
 ## Usage Instructions
